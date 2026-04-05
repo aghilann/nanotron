@@ -85,7 +85,7 @@ def main() -> None:
     dims = ParallelDims(tp=world_size, dp=1, world_size=world_size)
     dims.build_mesh()
 
-    logger = DistLogger(only_log_rank=0)
+    logger = DistLogger()
     logger.log(str(dims))
     logger.log(f"TP mesh: {dims.tp_mesh}")
 
