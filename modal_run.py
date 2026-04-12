@@ -132,7 +132,12 @@ def run(cmd: str) -> None:
 
 
 @app.local_entrypoint()
-def main(cmd: str = DEFAULT_CMD, ngpu: int = DEFAULT_NGPU, benchmark: bool = False) -> None:
+def main(
+    cmd: str = DEFAULT_CMD,
+    ngpu: int = DEFAULT_NGPU,
+    benchmark: bool = False,
+    benchmark_dp: bool = False,
+) -> None:
     """
     Run a command on Modal GPUs.
 
@@ -140,11 +145,19 @@ def main(cmd: str = DEFAULT_CMD, ngpu: int = DEFAULT_NGPU, benchmark: bool = Fal
         modal run modal_run.py
         modal run modal_run.py --cmd "make test-layers"
         modal run modal_run.py --ngpu 8 --cmd "torchrun --nproc_per_node=8 tests/test_e2e.py"
-        modal run modal_run.py --benchmark          # 1/2/4/8-GPU sweep in parallel
+        modal run modal_run.py --benchmark           # 4-GPU vs 8-GPU TP sweep in parallel
+        modal run modal_run.py --benchmark-dp        # TP=4,DP=2 vs TP=2,DP=4 in parallel
     """
     _fn = {1: run_1gpu, 2: run_2gpu, 4: run_4gpu, 8: run_8gpu}.get(ngpu, run)
     with modal.enable_output():
-        if benchmark:
+        if benchmark_dp:
+            handles = [
+                run_8gpu.spawn(cmd="torchrun --nproc_per_node=8 tests/test_dp_tp_benchmark.py --tp 4 --dp 2"),
+                run_8gpu.spawn(cmd="torchrun --nproc_per_node=8 tests/test_dp_tp_benchmark.py --tp 2 --dp 4"),
+            ]
+            for handle in handles:
+                handle.get()
+        elif benchmark:
             handles = [
                 run_4gpu.spawn(cmd="torchrun --nproc_per_node=4 tests/test_e2e.py"),
                 run_8gpu.spawn(cmd="torchrun --nproc_per_node=8 tests/test_e2e.py"),

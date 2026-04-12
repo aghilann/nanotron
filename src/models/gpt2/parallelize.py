@@ -1,8 +1,10 @@
 import torch
 from torch import nn
 from torch.distributed.device_mesh import DeviceMesh
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 from core.layers import ColumnParallelLinear, RowParallelLinear, VocabParallelEmbedding, ParallelLMHead
+from core.parallel_dims import ParallelDims
 from models.gpt2.model import GPT2Config, GPT2ForCausalLM, GPT2Attention, GPT2MLP
 
 
@@ -31,17 +33,7 @@ def _init_weights(module: nn.Module) -> None:
         nn.init.zeros_(module.bias)
 
 
-def build_model(config: GPT2Config, tp_mesh: DeviceMesh, device: str = "cuda") -> GPT2ForCausalLM:
-    """Build a parallelized GPT-2 without ever holding full weights on one device."""
-    with torch.device("meta"):
-        model = GPT2ForCausalLM(config)
-    parallelize(model, tp_mesh)
-    model.to_empty(device=device)
-    model.apply(_init_weights)
-    return model
-
-
-def parallelize(model: GPT2ForCausalLM, tp_mesh: DeviceMesh) -> GPT2ForCausalLM:
+def _parallelize_tp(model: GPT2ForCausalLM, tp_mesh: DeviceMesh) -> GPT2ForCausalLM:
     wte = model.model.wte
     model.model.wte = VocabParallelEmbedding(wte.num_embeddings, wte.embedding_dim, tp_mesh)
 
@@ -52,4 +44,22 @@ def parallelize(model: GPT2ForCausalLM, tp_mesh: DeviceMesh) -> GPT2ForCausalLM:
     lm_head = model.lm_head
     model.lm_head = ParallelLMHead(lm_head.out_features, lm_head.in_features, tp_mesh)
 
+    return model
+
+
+def build_model(config: GPT2Config, dims: ParallelDims, device: str = "cuda") -> nn.Module:
+    """
+    Build a fully parallelized GPT-2 from a ParallelDims spec.
+
+    - TP: model weights are sharded across dims.tp_mesh (always applied).
+    - DP: if dims.dp > 1, wraps with DDP over dims.dp_mesh so gradients
+          are all-reduced across data-parallel replicas after each backward.
+    """
+    with torch.device("meta"):
+        model = GPT2ForCausalLM(config)
+    _parallelize_tp(model, dims.tp_mesh)
+    model.to_empty(device=device)
+    model.apply(_init_weights)
+    if dims.dp_enabled:
+        return DDP(model, process_group=dims.dp_mesh.get_group())
     return model
