@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from dataclasses import dataclass, field
 
 import torch.distributed as dist
@@ -38,16 +36,13 @@ class ParallelDims:
 
     @property
     def tp_mesh(self) -> DeviceMesh:
-        if self._world_mesh is None:
-            raise RuntimeError("Call build_mesh() before accessing tp_mesh.")
+        assert self._world_mesh is not None, "Call build_mesh() before accessing tp_mesh."
         return self._world_mesh if self.dp == 1 else self._world_mesh["tp"]
 
     @property
     def dp_mesh(self) -> DeviceMesh:
-        if self._world_mesh is None:
-            raise RuntimeError("Call build_mesh() before accessing dp_mesh.")
-        if not self.dp_enabled:
-            raise ValueError("dp_mesh is not available when dp=1.")
+        assert self._world_mesh is not None, "Call build_mesh() before accessing dp_mesh."
+        assert self.dp_enabled, "dp_mesh is not available when dp=1."
         return self._world_mesh["dp"]
 
     @property
@@ -60,8 +55,7 @@ class ParallelDims:
 
     @property
     def tp_rank(self) -> int:
-        if self._world_mesh is None:
-            raise RuntimeError("Call build_mesh() before querying tp_rank.")
+        assert self._world_mesh is not None, "Call build_mesh() before querying tp_rank."
         return self.tp_mesh.get_local_rank()
 
     @property

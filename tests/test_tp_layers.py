@@ -3,10 +3,7 @@ torchrun --nproc_per_node=2 tests/test_tp_layers.py
 """
 import atexit
 import os
-import sys
 from datetime import timedelta
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import torch
 import torch.distributed as dist
@@ -14,7 +11,7 @@ from torch import nn
 
 from core.logger import DistLogger
 from core.parallel_dims import ParallelDims
-from core.layers import ColumnParallelLinear, RowParallelLinear
+from core.layers import ColumnParallelLinear, RowParallelLinear, VocabParallelEmbedding, ParallelLMHead
 
 DEVICE = torch.device("cuda")
 
@@ -88,6 +85,44 @@ def test_sharded_block(dims: ParallelDims, logger: DistLogger) -> None:
     logger.log("ShardedBlock (Column → Row) PASSED")
 
 
+def shard_vocab(weight: torch.Tensor, tp_rank: int, tp_size: int) -> torch.Tensor:
+    """Slice vocab dim (dim 0) for this rank."""
+    chunk = weight.shape[0] // tp_size
+    return weight[tp_rank * chunk : (tp_rank + 1) * chunk]
+
+
+def test_vocab_parallel_embedding(dims: ParallelDims, logger: DistLogger) -> None:
+    torch.manual_seed(0)
+    VOCAB, DIM = 32, 8
+    ref = nn.Embedding(VOCAB, DIM)
+    x = torch.tensor([0, 1, 7, 8, 16, 31], device=DEVICE)
+
+    emb = VocabParallelEmbedding(VOCAB, DIM, dims.tp_mesh).to(DEVICE)
+    emb.weight.data.copy_(shard_vocab(ref.weight.data, dims.tp_rank, dims.tp).to(DEVICE))
+
+    out = emb(x)
+    expected = ref(x.cpu()).to(DEVICE)
+    assert torch.allclose(out, expected, atol=1e-5), \
+        f"VocabParallelEmbedding FAILED: max diff {(out - expected).abs().max():.2e}"
+    logger.log("VocabParallelEmbedding PASSED")
+
+
+def test_parallel_lm_head(dims: ParallelDims, logger: DistLogger) -> None:
+    torch.manual_seed(0)
+    VOCAB, DIM = 32, 8
+    ref = nn.Linear(DIM, VOCAB, bias=False)
+    x = torch.randn(2, DIM, device=DEVICE)
+
+    head = ParallelLMHead(VOCAB, DIM, dims.tp_mesh).to(DEVICE)
+    head.weight.data.copy_(shard_vocab(ref.weight.data, dims.tp_rank, dims.tp).to(DEVICE))
+
+    out = head(x)
+    expected = ref(x.cpu()).to(DEVICE)
+    assert torch.allclose(out, expected, atol=1e-5), \
+        f"ParallelLMHead FAILED: max diff {(out - expected).abs().max():.2e}"
+    logger.log("ParallelLMHead PASSED")
+
+
 def main() -> None:
     local_rank = int(os.environ["LOCAL_RANK"])
     torch.cuda.set_device(local_rank)
@@ -105,6 +140,8 @@ def main() -> None:
     test_column_parallel(dims, logger)
     test_row_parallel(dims, logger)
     test_sharded_block(dims, logger)
+    test_vocab_parallel_embedding(dims, logger)
+    test_parallel_lm_head(dims, logger)
 
     logger.log("All layer tests passed!")
 
